@@ -1,0 +1,210 @@
+CurrentMap: Map
+
+// @reproduction: switching these values to enum, Untyped values got propagated to compilation stage
+TILE_BLOCKER :: 1
+TILE_ACTOR_IS_STANDING :: 2
+
+Tile :: int
+Map :: struct
+  data: *Tile
+  x: int
+  y: int
+  actors: A.Array(Actor)
+
+Actor :: struct
+  p: V2I
+  target_p: V2I
+  map: *Map
+
+  open_paths: A.Array(Path)
+  close_paths: A.Array(Path)
+  tiles_visited: A.Array(V2I)
+  history: A.Array(Path)
+
+Path :: struct
+  value_to_sort_by: int // distance from target
+  p: V2I
+  came_from: V2I
+
+Rect :: (p: V2I): Rectangle
+  result := Rectangle{p.x->F32 * RectX, p.y->F32 * RectY, RectX, RectY}
+  return result
+
+Circle :: (p: V2I): Vector2
+  result := Vector2{p.x->F32 * RectX + RectX/2, p.y->F32 * RectY + RectY/2}
+  return result
+
+ScreenToMap :: (p: Vector2): V2I
+  p0 := p.x / RectX
+  p1 := p.y / RectY
+  result := V2I{p0->int, p1->int}
+  return result
+
+AddActor :: (map: *Map, p: V2I): *Actor
+  A.Add(&map.actors, {p, p, map})
+  Assert(map.data[p.x + p.y * map.x] == 0)
+  map.data[p.x + p.y * map.x] |= TILE_ACTOR_IS_STANDING
+  actor := A.GetLast(&CurrentMap.actors)
+  return actor
+
+ActorSetP :: (actor: *Actor, p: V2I)
+  map := actor.map
+  new_tile := map.data + p.x + p.y * map.x
+  if *new_tile != 0 ;; return
+
+  tile := map.data + actor.p.x + actor.p.y * map.x
+  Assert((*tile & TILE_ACTOR_IS_STANDING) != 0)
+  *tile &= ~TILE_ACTOR_IS_STANDING
+
+  *new_tile |= TILE_ACTOR_IS_STANDING
+  actor.p = p
+
+  A.Reset(&actor.tiles_visited)
+  A.Reset(&actor.history)
+  A.Reset(&actor.open_paths)
+  A.Reset(&actor.close_paths)
+
+SetTargetP :: (s: *Actor, p: V2I)
+  s.target_p = p
+  A.Reset(&s.tiles_visited)
+  A.Reset(&s.history)
+  A.Reset(&s.open_paths)
+  A.Reset(&s.close_paths)
+
+GetRandomP :: (m: *Map): V2I
+  result: V2I = {GetRandomValue(0, CurrentMap.x - 1), GetRandomValue(0, CurrentMap.y - 1)}
+  return result
+
+GetRandomUnblockedP :: (m: *Map): V2I
+  for i := 0, i < 128, i += 1
+    p := GetRandomP(m)
+    if m.data[p.x + p.y * m.x] == 0
+      return p
+
+  Assert(false, "Invalid codepath")
+  return {}
+
+Init :: ()
+  CurrentMap.x = WinX / RectX
+  CurrentMap.y = WinY / RectY
+  bytes := sizeof(Tile) * CurrentMap.x->U64 * CurrentMap.y->U64
+  CurrentMap.data = malloc(bytes)
+  memset(CurrentMap.data, 0, bytes)
+
+  actor := AddActor(&CurrentMap, GetRandomUnblockedP(&CurrentMap))
+  actor.target_p = GetRandomUnblockedP(&CurrentMap)
+
+  actor2 := AddActor(&CurrentMap, GetRandomUnblockedP(&CurrentMap))
+  actor2.target_p = GetRandomUnblockedP(&CurrentMap)
+
+RandomizeActors :: ()
+  map := &CurrentMap
+  for i := 0, i < map.actors.len, i += 1
+    it := map.actors.data + i
+    p := GetRandomUnblockedP(&CurrentMap)
+    ActorSetP(it, p)
+    it.target_p = GetRandomUnblockedP(&CurrentMap)
+
+InsertOpenPath :: (s: *Actor, p: V2I, came_from: V2I, ignore_blocks: bool = false)
+  if p.x < 0 || p.x >= s.map.x ;; return
+  if p.y < 0 || p.y >= s.map.y ;; return
+  if ignore_blocks == false && s.map.data[p.x + p.y * s.map.x] != 0 ;; return
+
+  for i := 0, i < s.close_paths.len, i += 1
+    it := s.close_paths.data + i
+    if it.p.x == p.x && it.p.y == p.y ;; return
+
+  for i := 0, i < s.open_paths.len, i += 1
+    it := s.open_paths.data + i
+    if it.p.x == p.x && it.p.y == p.y ;; return
+
+  dx := s.target_p.x - p.x
+  dy := s.target_p.y - p.y
+  d  := dx*dx + dy*dy
+  A.InsertSortedDecreasing(&s.open_paths, {d, p, came_from})
+
+GetCloseP :: (s: *Actor, p: V2I): *Path
+  for i := 0, i < s.close_paths.len, i += 1
+    it := s.close_paths.data + i
+    if it.p.x == p.x && it.p.y == p.y ;; return it
+
+  Assert(false, "Invalid codepath")
+  return 0
+
+RecomputeHistory :: (s: *Actor)
+  if s.close_paths.len > 1
+    A.Reset(&s.history)
+    it := A.GetLast(&s.close_paths)
+    A.Add(&s.history, *it)
+    for i := 0,,i += 1
+      if it.p.x == s.p.x && it.p.y == s.p.y ;; break
+      if i > 512
+        A.Reset(&s.history)
+        break
+      it = GetCloseP(s, it.came_from)
+      A.Add(&s.history, *it)
+    A.Pop(&s.history)
+
+MoveTowardsTarget :: (s: *Actor)
+  tile := s.map.data + s.p.x + s.p.y * s.map.x
+  if s.history.len > 0
+    step := A.Pop(&s.history)
+    new_tile := s.map.data + step.p.x + step.p.y * s.map.x
+    if *new_tile == 0
+      A.Add(&s.tiles_visited, s.p)
+      s.p = step.p
+      *tile &= ~TILE_ACTOR_IS_STANDING
+      *new_tile |= TILE_ACTOR_IS_STANDING
+
+PathFindUpdate :: (map: *Map)
+  for actor_i := 0, actor_i < map.actors.len, actor_i += 1
+    s := map.actors.data + actor_i
+    for i := 0, i < s.history.len, i += 1
+      it := s.history.data + i
+
+      tile := s.map.data[it.p.x + it.p.y * s.map.x]
+      if tile != 0
+        A.Reset(&s.open_paths)
+        A.Reset(&s.close_paths)
+        A.Reset(&s.history)
+        break
+
+    PathFind(s)
+
+PathFindStep :: (s: *Actor, compute_history: bool = true): bool
+  if s.open_paths.len == 0
+    // Reset if we didnt find solution
+    if s.close_paths.len != 0
+      last := A.GetLast(&s.close_paths)
+      reached_target := last.p.x == s.target_p.x && last.p.y == s.target_p.y
+      if reached_target == false
+        A.Reset(&s.open_paths)
+        A.Reset(&s.close_paths)
+        A.Reset(&s.history)
+
+    InsertOpenPath(s, s.p, s.p, ignore_blocks = true)
+
+  if s.close_paths.len != 0
+    last := A.GetLast(&s.close_paths)
+    reached_target := last.p.x == s.target_p.x && last.p.y == s.target_p.y
+    if reached_target
+      return true
+
+  it := A.Pop(&s.open_paths)
+  A.Add(&s.close_paths, it)
+
+
+  for y := -1, y <= 1, y += 1
+    for x := -1, x <= 1, x += 1
+      if x == 0 && y == 0 ;; continue
+      p := V2I{it.p.x + x, it.p.y + y}
+      InsertOpenPath(s, p, it.p)
+
+  if compute_history ;; RecomputeHistory(s)
+  return false
+
+PathFind :: (s: *Actor)
+  for i := 0, i < 32, i += 1
+    done := PathFindStep(s, false)
+    if done ;; break
+  RecomputeHistory(s)

@@ -1,0 +1,7 @@
+generated_main.c
+*.exe
+*.lib
+*.pdb
+*.cache
+*.ilk
+*.obj

@@ -1,0 +1,249 @@
+#import "raylib.core"
+#import "LibC.core"
+A :: #import "array.core"
+MAP :: #load "map.core"
+sqrtf :: #foreign (value: F32): F32
+
+V2I :: struct
+  x: int
+  y: int
+
+ANI_SetTile :: struct
+  set: bool
+  p: V2I
+  t: F32
+
+WinX := 1280
+WinY := 720
+MouseX := 0
+MouseY := 0
+MouseP: Vector2
+Mode := 0
+RectX :: 16
+RectY :: 16
+Dt: F32
+ANI_SetTiles: A.Array(ANI_SetTile)
+
+MouseSelecting := false
+MouseSelectionPivot: Vector2
+MouseSelectionBox: Rectangle
+MouseSelectedActors: A.Array(*MAP.Actor) // @todo: ids
+
+main :: (): int
+  MAP.Init()
+
+  // InitAudioDevice()
+  // sound := LoadSound("catune - Pass the town, and to the C.mp3")
+  // SetMasterVolume(0.01)
+  // PlaySound(sound)
+
+  InitWindow(WinX, WinY, "Testing")
+  SetTargetFPS(60)
+
+  orange := ORANGE
+  orange.a = 255/2
+
+  brown := BROWN
+  brown.a = 255/2
+
+  actor_color := DARKGREEN
+  actor_color.a = 255/2
+
+  past_actor_color := BLUE
+  past_actor_color.a = 255/2
+
+  target_color := RED
+  target_color.a = 255/2
+
+  COLOR_SelectionBox := GREEN
+  COLOR_SelectionBox.a = 255/2
+
+  COLOR_Selected := COLOR_SelectionBox
+
+  testing := 0
+  for !WindowShouldClose()
+    defer ;; testing += 1
+    WinX = GetScreenWidth()
+    WinY = GetScreenHeight()
+    MouseX = GetMouseX()
+    MouseY = GetMouseY()
+    MouseP = GetMousePosition()
+    Dt = GetFrameTime()
+    map := &MAP.CurrentMap
+
+    MouseSelecting = false
+    if IsMouseButtonDown(MOUSE_BUTTON_LEFT)
+      MouseSelecting = true
+      if IsMouseButtonPressed(MOUSE_BUTTON_LEFT)
+        MouseSelectionPivot = MouseP
+      MouseSelectionBox = {
+        MouseSelectionPivot.x,
+        MouseSelectionPivot.y,
+        MouseP.x - MouseSelectionPivot.x,
+        MouseP.y - MouseSelectionPivot.y
+      }
+
+      if MouseSelectionBox.width < 0
+        MouseSelectionBox.x += MouseSelectionBox.width
+        MouseSelectionBox.width = -MouseSelectionBox.width
+      if MouseSelectionBox.height < 0
+        MouseSelectionBox.y += MouseSelectionBox.height
+        MouseSelectionBox.height = -MouseSelectionBox.height
+
+    if IsKeyPressed(KEY_F1)
+      Mode = 0
+
+    if IsKeyPressed(KEY_F2)
+      Mode = 1
+
+    if IsKeyPressed(KEY_F3)
+      for i := 0, i < map.actors.len, i += 1
+        it := map.actors.data + i
+        MAP.MoveTowardsTarget(it)
+    MAP.PathFindUpdate(map)
+
+    if IsKeyPressed(KEY_F4)
+      MAP.RandomizeActors()
+
+
+    BeginDrawing()
+    ClearBackground(RAYWHITE)
+
+    map_rectangle := Rectangle{0, 0, map.x->F32 * RectX, map.y->F32 * RectY}
+    DrawRectangleRec(map_rectangle, LIGHTGRAY)
+
+    for x := 0, x < map.x, x += 1
+      for y := 0, y < map.y, y += 1
+        it := map.data + (x + y*map.x)
+        r  := Rectangle{x->F32 * RectX, y->F32 * RectY, RectX, RectY}
+        r2 := Rectangle{r.x + 1, r.y + 1, r.width - 2, r.height - 2}
+
+        colliding := CheckCollisionPointRec(MouseP, r)
+        color := RAYWHITE
+        if *it == 1 ;; color = GRAY
+
+
+        if Mode == 0
+          if colliding && IsMouseButtonDown(MOUSE_BUTTON_LEFT)
+            A.Add(&ANI_SetTiles, {true, {x,y}})
+          if colliding && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)
+            A.Add(&ANI_SetTiles, {false, {x,y}})
+          if colliding == true ;; color = {a = 100}
+
+        DrawRectangleRec(r2, color)
+
+    for tile_i := 0, tile_i < ANI_SetTiles.len, tile_i += 1
+      tile_it := ANI_SetTiles.data + tile_i
+      remove := false
+
+      t := tile_it.t
+      if tile_it.set == false
+        t = 1 - t
+
+
+      x := tile_it.p.x->F32 * RectX + 1
+      y := tile_it.p.y->F32 * RectY + 1
+      w: F32 = (RectX - 2)
+      h: F32 = (RectY - 2)
+      wt := w * t
+      ht := h * t
+      wd := w - wt
+      hd := h - ht
+
+      r := Rectangle{x + wd/2, y + hd/2, wt, ht}
+      DrawRectangleRec(r, GRAY)
+
+
+      if tile_it.t > 1
+        map_tile := map.data + (tile_it.p.x + tile_it.p.y*map.x)
+        if tile_it.set ;; *map_tile |= MAP.TILE_BLOCKER
+        else ;; *map_tile &= ~MAP.TILE_BLOCKER
+        remove = true
+
+      tile_it.t += Dt*8
+      if remove
+        A.UnorderedRemove(&ANI_SetTiles, tile_it)
+        tile_i -= 1
+
+    for i := 0, i < map.actors.len, i += 1
+      actor_it := map.actors.data + i
+      target_r := MAP.Rect(actor_it.target_p)
+
+      main_p := MAP.Circle(actor_it.p)
+      DrawCircleV(main_p, RectX/2, actor_color)
+      DrawRectangleRec(target_r, target_color)
+
+      smaller_the_further: F32 = 0
+      for tile_i := actor_it.tiles_visited.len - 1, tile_i >= 0, tile_i -= 1
+        tile_it := actor_it.tiles_visited.data + tile_i
+        p := MAP.Circle({tile_it.x, tile_it.y})
+        DrawCircleV(p, RectX/2 - smaller_the_further, past_actor_color)
+        smaller_the_further += 0.5
+
+      for path_i := 0, path_i < actor_it.open_paths.len, path_i += 1
+        path_it := actor_it.open_paths.data + path_i
+        path_r := MAP.Rect(path_it.p)
+        DrawRectangleRec(path_r, orange)
+        s := TextFormat("%d", sqrtf(path_it.value_to_sort_by->F32)->int)
+        DrawText(s, path_r.x->int, path_r.y->int, 1, RAYWHITE)
+
+      for path_i := 0, path_i < actor_it.close_paths.len, path_i += 1
+        path_it := actor_it.close_paths.data + path_i
+        path_r := MAP.Rect(path_it.p)
+        DrawRectangleRec(path_r, brown)
+
+      for path_i := 0, path_i < actor_it.history.len, path_i += 1
+        path_it := actor_it.history.data + path_i
+
+        p0 := MAP.Circle(path_it.came_from)
+        p1 := MAP.Circle(path_it.p)
+
+        DrawLineEx(p0, p1, 5, LIGHTGRAY)
+        DrawCircleV(p0, 4, LIGHTGRAY)
+        DrawCircleV(p1, 4, LIGHTGRAY)
+
+    if Mode == 1
+      for actor_i := 0, actor_i < MouseSelectedActors.len, actor_i += 1
+        actor_it := MouseSelectedActors.data[actor_i]
+        actor_box := MAP.Rect(actor_it.p)
+        DrawRectangleRec(actor_box, COLOR_Selected)
+
+        if IsMouseButtonPressed(MOUSE_BUTTON_RIGHT)
+          p := MAP.ScreenToMap(MouseP)
+          MAP.SetTargetP(actor_it, p)
+
+      if MouseSelecting
+        A.Reset(&MouseSelectedActors)
+
+        for actor_i := 0, actor_i < map.actors.len, actor_i += 1
+          actor_it := map.actors.data + actor_i
+          actor_box := MAP.Rect(actor_it.p)
+
+          if CheckCollisionRecs(actor_box, MouseSelectionBox)
+            A.Add(&MouseSelectedActors, actor_it)
+
+        DrawRectangleRec(MouseSelectionBox, COLOR_SelectionBox)
+
+
+    menu_open := false
+    if menu_open
+      text_size := 24
+      text_p := 4
+      text_y := WinY - text_size
+
+      DrawText("Space :: PathFind", text_p, text_y, text_size, GRAY)
+      text_y -= text_size
+      DrawText("F4 :: Randomize actors", text_p, text_y, text_size, GRAY)
+      text_y -= text_size
+      DrawText("F3 :: Simulate actors", text_p, text_y, text_size, GRAY)
+      text_y -= text_size
+      text: *char = "Mode(F1) :: Block placing"
+      if Mode == 1 ;; text = "Mode(F2) :: Actor placing"
+      DrawText(text, text_p, text_y, text_size, GRAY)
+      text_y -= text_size
+
+
+
+    EndDrawing()
+
+  return 0
